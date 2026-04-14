@@ -1,7 +1,3 @@
-# ==================================================
-# APLICAÇÃO FINANCE PRO – VERSÃO MELHORADA
-# ==================================================
-
 import customtkinter as ctk
 from tkinter import filedialog, ttk, messagebox, Menu
 import tkinter.messagebox as msg
@@ -10,7 +6,7 @@ from PIL import Image, ImageTk
 from services.document_service import adicionar_documento
 from services.report_service import gerar_relatorio
 from services.dashboard_service import listar_documentos, resumo_financeiro
-from services.pdf_extractor import extrair_valor_total   # NOVO
+from services.pdf_extractor import extrair_valor_total
 from data.database import Session, Documento
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -18,12 +14,12 @@ from matplotlib.animation import FuncAnimation
 import numpy as np
 import os
 from tkcalendar import Calendar
-import datetime
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-class App(ctk.CTk):
+class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         self.title("Finance Pro")
@@ -161,6 +157,10 @@ class App(ctk.CTk):
         self.tabela.bind("<Button-3>", self.abrir_menu_contexto)
         self.tabela.bind("<Double-1>", self.editar_por_duplo_clique)
 
+        # ========== NOVO: HABILITA DROP NA TABELA ==========
+        self.tabela.drop_target_register(DND_FILES)
+        self.tabela.dnd_bind("<<Drop>>", self.drop_na_tabela)
+
         self.menu = Menu(self, tearoff=0)
         self.menu.add_command(label="✏️ Editar nome", command=self.editar_nome)
         self.menu.add_command(label="🏷️ Editar categoria", command=self.editar_categoria)
@@ -206,14 +206,7 @@ class App(ctk.CTk):
     def importar_pdf(self):
         caminho = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
         if caminho:
-            valor = extrair_valor_total(caminho)
-            if valor is None:
-                messagebox.showwarning(
-                    "PDF sem valor",
-                    "Esse PDF não tem valor para poder ser inserido."
-                )
-                return
-            self.escolher_categoria(lambda cat: self.salvar_pdf(caminho, cat, valor))
+            self._processar_pdf_unico(caminho)
 
     def escolher_categoria(self, callback):
         popup = ctk.CTkToplevel(self)
@@ -228,6 +221,53 @@ class App(ctk.CTk):
 
     def salvar_pdf(self, caminho, categoria, valor_extraido):
         adicionar_documento(caminho, categoria, valor_extraido)
+        self.atualizar_dashboard()
+
+    # ---------- DRAG AND DROP ----------
+    def drop_na_tabela(self, event):
+        """Processa arquivos PDF soltos diretamente na tabela."""
+        arquivos = self.tk.splitlist(event.data)
+        pdfs = [arq for arq in arquivos if arq.lower().endswith(".pdf")]
+        if not pdfs:
+            messagebox.showwarning("Aviso", "Nenhum arquivo PDF foi solto.")
+            return
+
+        if len(pdfs) == 1:
+            self._processar_pdf_unico(pdfs[0])
+        else:
+            resposta = messagebox.askyesno(
+                "Múltiplos PDFs",
+                f"Deseja aplicar a mesma categoria para os {len(pdfs)} arquivos?\n"
+                "Se escolher 'Não', será perguntado para cada um."
+            )
+            if resposta:
+                self.escolher_categoria(lambda cat: self._processar_multiplos_pdfs(pdfs, cat))
+            else:
+                for pdf in pdfs:
+                    self._processar_pdf_unico(pdf)
+
+    def _processar_pdf_unico(self, caminho):
+        """Processa um único PDF (extrai valor, pede categoria e salva)."""
+        valor = extrair_valor_total(caminho)
+        if valor is None:
+            messagebox.showwarning(
+                "PDF sem valor",
+                f"O arquivo '{os.path.basename(caminho)}' não possui valor identificável."
+            )
+            return
+        self.escolher_categoria(lambda cat: self.salvar_pdf(caminho, cat, valor))
+
+    def _processar_multiplos_pdfs(self, lista_pdfs, categoria):
+        """Processa vários PDFs com a mesma categoria."""
+        for caminho in lista_pdfs:
+            valor = extrair_valor_total(caminho)
+            if valor is None:
+                messagebox.showwarning(
+                    "PDF sem valor",
+                    f"O arquivo '{os.path.basename(caminho)}' não possui valor identificável."
+                )
+                continue
+            adicionar_documento(caminho, categoria, valor)
         self.atualizar_dashboard()
 
     # ---------- EXPORTAR ----------
@@ -291,7 +331,6 @@ class App(ctk.CTk):
         col_index = int(col.replace("#", "")) - 1
         valores = self.tabela.item(item_id)["values"]
 
-        # Coluna PDF (índice 0): abre o arquivo
         if col_index == 0:
             doc_id = int(item_id)
             session = Session()
@@ -300,7 +339,6 @@ class App(ctk.CTk):
                 os.startfile(doc.caminho)
             return
 
-        # Colunas editáveis: nome(1), categoria(2), valor(3), data(4)
         if col_index in (1, 2, 3, 4):
             self.editar_celula_especifica(item_id, col_index)
 
@@ -313,25 +351,25 @@ class App(ctk.CTk):
         valores = list(self.tabela.item(item_id)["values"])
         valor_atual = valores[col_index]
 
-        if col_index == 4:  # data
+        if col_index == 4:
             self.abrir_calendario(item_id, col_index)
             return
 
         widget = None
-        if col_index == 2:  # categoria
+        if col_index == 2:
             var = ctk.StringVar(value=valor_atual)
             widget = ctk.CTkOptionMenu(
                 self.tabela, values=["ganhos", "gastos"],
                 variable=var, width=width, height=height
             )
-        elif col_index == 3:  # valor
+        elif col_index == 3:
             try:
                 numero = float(valor_atual.replace("R$", "").replace(".", "").replace(",", "."))
             except:
                 numero = 0.0
             widget = ctk.CTkEntry(self.tabela, width=width, height=height)
             widget.insert(0, f"{numero:.2f}")
-        elif col_index == 1:  # nome
+        elif col_index == 1:
             widget = ctk.CTkEntry(self.tabela, width=width, height=height)
             widget.insert(0, valor_atual)
 
@@ -341,23 +379,56 @@ class App(ctk.CTk):
         widget.focus()
 
         def salvar(event=None):
+            nonlocal valores
             try:
                 if col_index == 2:
                     novo_valor = widget.get()
+                    valores_banco = valores.copy()
+                    valores_banco[col_index] = novo_valor
                 elif col_index == 3:
-                    novo_valor = float(widget.get().replace(",", "."))
+                    novo_valor_float = float(widget.get().replace(",", "."))
+                    novo_valor = self.formatar_moeda(novo_valor_float)
+                    valores_banco = valores.copy()
+                    valores_banco[col_index] = novo_valor_float
                 else:
                     novo_valor = widget.get()
+                    valores_banco = valores.copy()
+                    valores_banco[col_index] = novo_valor
             except:
                 widget.configure(border_color="red")
                 return
+
             widget.destroy()
-            valores[col_index] = novo_valor
+
+            if col_index == 3:
+                valores[col_index] = novo_valor
+            else:
+                valores[col_index] = novo_valor
+
             self.tabela.item(item_id, values=valores)
-            self.atualizar_banco(item_id, valores)
+
+            if col_index == 2:
+                self._atualizar_tags_linha(item_id, novo_valor)
+
+            self.atualizar_banco(item_id, valores_banco)
+            self.atualizar_cards()
+            self.atualizar_grafico()
 
         widget.bind("<Return>", salvar)
         widget.bind("<FocusOut>", salvar)
+
+    def _atualizar_tags_linha(self, item_id, categoria):
+        tags_finais = []
+        children = self.tabela.get_children()
+        if item_id in children:
+            index = children.index(item_id)
+            if index % 2 == 0:
+                tags_finais.append("evenrow")
+        if categoria == "ganhos":
+            tags_finais.append("ganho")
+        else:
+            tags_finais.append("gasto")
+        self.tabela.item(item_id, tags=tags_finais)
 
     def atualizar_banco(self, iid, valores):
         from data.database import Session, Documento
@@ -375,7 +446,6 @@ class App(ctk.CTk):
         doc.data = str(valores[4])
         session.commit()
 
-    # Métodos de conveniência para o menu
     def editar_nome(self):
         sel = self.tabela.selection()
         if sel:
@@ -396,7 +466,6 @@ class App(ctk.CTk):
         if sel:
             self.abrir_calendario(sel[0], 4)
 
-    # ---------- CALENDÁRIO ----------
     def abrir_calendario(self, item_id, col_index):
         popup = ctk.CTkToplevel(self)
         popup.title("Selecionar Data")
@@ -410,6 +479,13 @@ class App(ctk.CTk):
             valores[col_index] = data
             self.tabela.item(item_id, values=valores)
             self.atualizar_banco(item_id, valores)
+
+            self.atualizar_cards()
+            self.atualizar_grafico()
             popup.destroy()
 
         ctk.CTkButton(popup, text="Selecionar", command=selecionar).pack(pady=10)
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
